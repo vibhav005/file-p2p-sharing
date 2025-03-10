@@ -11,7 +11,7 @@
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist"
   },
-  "homepage": "https://vibh005.github.io/file-p2p-sharing/",
+  "homepage": "https://vibhav005.github.io/file-p2p-sharing/",
   "dependencies": {
     "@radix-ui/react-progress": "^1.1.2",
     "@radix-ui/react-slot": "^1.1.2",
