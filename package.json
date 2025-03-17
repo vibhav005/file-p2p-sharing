@@ -13,8 +13,10 @@
   },
   "homepage": "https://vibhav005.github.io/file-p2p-sharing/",
   "dependencies": {
+    "@radix-ui/react-dialog": "^1.1.6",
     "@radix-ui/react-progress": "^1.1.2",
     "@radix-ui/react-slot": "^1.1.2",
+    "@radix-ui/react-tooltip": "^1.1.8",
     "@tailwindcss/vite": "^4.0.11",
     "autoprefixer": "^10.4.20",
     "class-variance-authority": "^0.7.1",
@@ -22,6 +24,7 @@
     "lucide-react": "^0.477.0",
     "peerjs": "^1.5.4",
     "postcss": "^8.5.3",
+    "qrcode.react": "^4.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwind-merge": "^3.0.2",
