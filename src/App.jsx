@@ -23,8 +23,8 @@ import {
   RefreshCw,
   Wifi,
   WifiOff,
-  QrCode, // Added QR code icon
-  Share, // Added share icon
+  QrCode,
+  Share,
 } from "lucide-react";
 import {
   Tooltip,
@@ -41,8 +41,11 @@ import {
   DialogTitle,
   DialogDescription,
   DialogClose,
-} from "@/components/ui/dialog"; // Import Dialog components
+} from "@/components/ui/dialog";
 import { QRCodeCanvas } from "qrcode.react";
+
+// Increase chunk size to 10MB for better performance with large files
+const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB
 
 function App() {
   // State
@@ -55,13 +58,14 @@ function App() {
   const [receivedFiles, setReceivedFiles] = useState([]);
   const [error, setError] = useState("");
   const [copySuccess, setCopySuccess] = useState(false);
-  const [showQrDialog, setShowQrDialog] = useState(false); // State for QR code dialog
-  const [shareLinkCopied, setShareLinkCopied] = useState(false); // State for share link copy success
+  const [showQrDialog, setShowQrDialog] = useState(false);
+  const [shareLinkCopied, setShareLinkCopied] = useState(false);
 
   // Refs
   const peerRef = useRef(null);
   const connectionRef = useRef(null);
   const fileInputRef = useRef(null);
+  const fileTransferRef = useRef(null);
 
   // Initialize PeerJS
   useEffect(() => {
@@ -87,8 +91,6 @@ function App() {
       const peerIdParam = urlParams.get("peerId");
       if (peerIdParam && peerIdParam !== id) {
         setRemotePeerId(peerIdParam);
-        // Optional: auto-connect if ID is provided in URL
-        // setTimeout(() => connectToPeer(peerIdParam), 1000);
       }
     });
 
@@ -191,6 +193,7 @@ function App() {
       setConnectionStatus("error");
     }
   };
+
   // Handle file selection
   const handleFileSelect = (e) => {
     const file = e.target.files[0];
@@ -207,8 +210,8 @@ function App() {
     }
   };
 
-  // Send file to connected peer
-  const sendFile = () => {
+  // Send file to connected peer with improved large file handling
+  const sendFile = async () => {
     if (!selectedFile) {
       setError("No file selected");
       return;
@@ -238,127 +241,110 @@ function App() {
     setTransferProgress(0);
     setError(""); // Clear any previous errors
 
-    // Read file as array buffer
-    const reader = new FileReader();
+    try {
+      // Split file into chunks
+      const totalChunks = Math.ceil(selectedFile.size / CHUNK_SIZE);
 
-    reader.onload = (e) => {
-      const fileData = e.target.result;
-      const fileName = selectedFile.name;
-      const fileType = selectedFile.type;
-      const fileSize = selectedFile.size;
+      // Send file metadata first
+      connectionRef.current.send({
+        type: "file-metadata",
+        fileName: selectedFile.name,
+        fileType: selectedFile.type,
+        fileSize: selectedFile.size,
+        totalChunks: totalChunks,
+      });
 
-      // Chunk size (1MB)
-      const chunkSize = 1024 * 1024;
-      const chunks = Math.ceil(fileData.byteLength / chunkSize);
+      // Send file chunks one by one
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+        const start = chunkIndex * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, selectedFile.size);
+        const chunk = selectedFile.slice(start, end);
 
-      try {
-        // Send file metadata first
-        connectionRef.current.send({
-          type: "file-metadata",
-          fileName,
-          fileType,
-          fileSize,
-          chunks,
+        // Create a promise to resolve when chunk is sent
+        await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            connectionRef.current.send({
+              type: "file-chunk",
+              chunk: e.target.result,
+              index: chunkIndex,
+              totalChunks: totalChunks,
+            });
+
+            // Update progress
+            const progress = Math.round(((chunkIndex + 1) / totalChunks) * 100);
+            setTransferProgress(progress);
+            resolve();
+          };
+          reader.readAsArrayBuffer(chunk);
         });
-
-        // Send file chunks
-        for (let i = 0; i < chunks; i++) {
-          const start = i * chunkSize;
-          const end = Math.min(fileData.byteLength, start + chunkSize);
-          const chunk = fileData.slice(start, end);
-
-          connectionRef.current.send({
-            type: "file-chunk",
-            chunk,
-            index: i,
-            total: chunks,
-          });
-
-          // Update progress (simulated as we can't track actual sending progress)
-          const progress = Math.round(((i + 1) / chunks) * 100);
-          setTransferProgress(progress);
-        }
-
-        // Indicate completion
-        setTransferStatus("sent");
-        setTimeout(() => {
-          setTransferStatus("idle");
-          setTransferProgress(0);
-        }, 3000);
-      } catch (err) {
-        console.error("Error sending file:", err);
-        setError(`Error sending file: ${err.message}`);
-        setTransferStatus("error");
       }
-    };
 
-    reader.onerror = (err) => {
-      console.error("Error reading file:", err);
-      setError(`Error reading file: ${err.message}`);
+      // Indicate completion
+      setTransferStatus("sent");
+      setTimeout(() => {
+        setTransferStatus("idle");
+        setTransferProgress(0);
+      }, 3000);
+    } catch (err) {
+      console.error("Error sending file:", err);
+      setError(`Error sending file: ${err.message}`);
       setTransferStatus("error");
-    };
-
-    reader.readAsArrayBuffer(selectedFile);
+    }
   };
-  // Handle received data (metadata and chunks)
+
+  // Handle received data with improved large file handling
   const handleReceivedData = (data) => {
     if (data.type === "file-metadata") {
-      // Initialize a new file reception
+      // Initialize file transfer tracking
+      fileTransferRef.current = {
+        metadata: data,
+        chunks: [],
+        receivedSize: 0,
+      };
+
       setTransferStatus("receiving");
       setTransferProgress(0);
-
-      window.currentFileTransfer = {
-        metadata: data,
-        chunks: new Array(data.chunks),
-        receivedChunks: 0,
-        buffer: new ArrayBuffer(data.fileSize),
-      };
     } else if (data.type === "file-chunk") {
-      // Process received chunk
-      const fileTransfer = window.currentFileTransfer;
-
-      if (!fileTransfer) {
+      if (!fileTransferRef.current) {
         console.error("Received chunk without metadata");
         return;
       }
 
-      // Store the chunk data
-      const view = new Uint8Array(fileTransfer.buffer);
-      const chunkData = new Uint8Array(data.chunk);
-
-      const chunkSize = 1024 * 1024; // 1MB, same as sender
-      const start = data.index * chunkSize;
-
-      view.set(chunkData, start);
-
-      fileTransfer.chunks[data.index] = true;
-      fileTransfer.receivedChunks++;
+      // Store the chunk
+      fileTransferRef.current.chunks.push(new Blob([data.chunk]));
+      fileTransferRef.current.receivedSize += data.chunk.byteLength;
 
       // Update progress
       const progress = Math.round(
-        (fileTransfer.receivedChunks / data.total) * 100
+        (fileTransferRef.current.receivedSize /
+          fileTransferRef.current.metadata.fileSize) *
+          100
       );
       setTransferProgress(progress);
 
       // Check if all chunks received
-      if (fileTransfer.receivedChunks === data.total) {
-        // Create file from the received data
-        const fileBlob = new Blob([fileTransfer.buffer], {
-          type: fileTransfer.metadata.fileType,
+      if (
+        fileTransferRef.current.chunks.length ===
+        fileTransferRef.current.metadata.totalChunks
+      ) {
+        // Combine chunks into a single blob
+        const receivedBlob = new Blob(fileTransferRef.current.chunks, {
+          type: fileTransferRef.current.metadata.fileType,
         });
 
-        // Update UI
-        setReceivedFiles((prev) => [
-          ...prev,
-          {
-            id: Date.now(),
-            name: fileTransfer.metadata.fileName,
-            type: fileTransfer.metadata.fileType,
-            size: fileTransfer.metadata.fileSize,
-            blob: fileBlob,
-            url: URL.createObjectURL(fileBlob),
-          },
-        ]);
+        // Create file object and generate URL
+        const receivedFile = {
+          id: Date.now(),
+          name: fileTransferRef.current.metadata.fileName,
+          type: fileTransferRef.current.metadata.fileType,
+          size: fileTransferRef.current.metadata.fileSize,
+          blob: receivedBlob,
+          url: URL.createObjectURL(receivedBlob),
+        };
+
+        // Update received files
+        setReceivedFiles((prev) => [...prev, receivedFile]);
 
         setTransferStatus("received");
         setTimeout(() => {
@@ -367,7 +353,7 @@ function App() {
         }, 3000);
 
         // Clean up
-        delete window.currentFileTransfer;
+        fileTransferRef.current = null;
       }
     }
   };
